@@ -40,15 +40,11 @@ function create() {
     // Space background
     this.add.rectangle(180, 320, 360, 640, 0x000011);
 
-    // Parallax stars
-    this.stars = [];
+    // Static stars
     for (let i = 0; i < 80; i++) {
         const x = Phaser.Math.Between(0, 360);
         const y = Phaser.Math.Between(0, 640);
-        const star = this.add.image(x, y, 'star');
-        star.speedY = Phaser.Math.FloatBetween(0.05, 0.2);
-        star.parallaxFactor = Phaser.Math.FloatBetween(0.02, 0.1);
-        this.stars.push(star);
+        this.add.image(x, y, 'star');
     }
 
     // Moon surface
@@ -60,30 +56,33 @@ function create() {
     this.dome.setOrigin(0.5, 1);
     this.physics.add.existing(this.dome, true);
     this.dome.hits = 0;
-    this.domeCracks = this.add.sprite(180, 580, 'cracks_1').setOrigin(0.5, 1).setVisible(false);
+    // Persistent graphics layer for accumulating cracks
+    this.crackGraphics = this.add.graphics();
+    this.crackGraphics.setPosition(180 - 80, 580 - 80);
 
     // Saucer
     this.saucer = this.physics.add.sprite(180, 150, 'saucer');
     this.saucer.setCollideWorldBounds(true);
 
-    // Controls
+    // Controls - track target position for smooth movement
+    this.saucerTarget = { x: this.saucer.x, y: this.saucer.y };
     this.input.on('pointermove', (pointer) => {
         if (this.isGameOver) return;
         if (pointer.isDown) {
-            this.saucer.x = pointer.x;
-            this.saucer.y = pointer.y;
+            this.saucerTarget.x = pointer.x;
+            this.saucerTarget.y = pointer.y;
         }
     });
     this.input.on('pointerdown', (pointer) => {
         if (this.isGameOver) return;
-        this.saucer.x = pointer.x;
-        this.saucer.y = pointer.y;
+        this.saucerTarget.x = pointer.x;
+        this.saucerTarget.y = pointer.y;
     });
 
     // Bombing timer
     this.bombs = this.physics.add.group();
     this.time.addEvent({
-        delay: 1500,
+        delay: 2500,
         callback: dropBomb,
         callbackScope: this,
         loop: true
@@ -104,7 +103,7 @@ function create() {
     this.physics.add.overlap(this.missiles, this.saucer, hitSaucer, null, this);
     this.physics.add.overlap(this.missiles, this.ground, hitGround, null, this);
 
-    this.titleText = this.add.text(180, 30, 'BIRTHDAY MOON MISSION', {
+    this.titleText = this.add.text(180, 30, 'MOON MISSION', {
         fontFamily: '"Courier New", Courier, monospace',
         fontSize: '20px',
         color: '#00ff00',
@@ -118,16 +117,13 @@ function create() {
     }
 }
 
-function update() {
-    this.stars.forEach(star => {
-        star.y += star.speedY;
-        if (star.y > 640) star.y = 0;
-
-        const offsetX = (this.saucer.x - 180) * star.parallaxFactor;
-        star.x = (star.x - offsetX * 0.01);
-        if (star.x > 360) star.x = 0;
-        if (star.x < 0) star.x = 360;
-    });
+function update(time, delta) {
+    // Smooth saucer movement — lerp toward target
+    if (!this.isGameOver && !this.isVictory) {
+        const lerpFactor = 1 - Math.pow(0.001, delta / 1000);
+        this.saucer.x += (this.saucerTarget.x - this.saucer.x) * lerpFactor;
+        this.saucer.y += (this.saucerTarget.y - this.saucer.y) * lerpFactor;
+    }
 
     this.missiles.getChildren().forEach(missile => {
         if (!this.isGameOver && !this.isVictory) {
@@ -164,9 +160,16 @@ function hitDome(dome, bomb) {
     if (this.isVictory) return;
 
     this.dome.hits++;
-    if (this.dome.hits >= 1 && this.dome.hits <= 4) {
-        this.domeCracks.setVisible(true);
-        this.domeCracks.setTexture('cracks_' + this.dome.hits);
+    // Draw new crack lines that accumulate on top of existing ones
+    this.crackGraphics.lineStyle(2, 0x444444, 1);
+    const numLines = 2 + this.dome.hits;
+    for (let j = 0; j < numLines; j++) {
+        this.crackGraphics.lineBetween(
+            Phaser.Math.Between(30, 130),
+            Phaser.Math.Between(10, 70),
+            Phaser.Math.Between(30, 130),
+            Phaser.Math.Between(10, 70)
+        );
     }
 
     if (this.dome.hits >= 5) {
@@ -224,9 +227,25 @@ function startVictory(scene) {
     if (scene.isVictory) return;
     scene.isVictory = true;
     scene.dome.setVisible(false);
-    scene.domeCracks.setVisible(false);
+    scene.crackGraphics.setVisible(false);
 
-    scene.add.sprite(180, 580, 'cake').setOrigin(0.5, 1);
+    // Self-destruct all missiles
+    scene.missiles.getChildren().forEach(missile => {
+        const p = scene.add.particles(0, 0, 'star', {
+            x: missile.x,
+            y: missile.y,
+            speed: { min: 30, max: 120 },
+            angle: { min: 0, max: 360 },
+            scale: { start: 2, end: 0 },
+            lifespan: 600,
+            quantity: 10,
+            emitting: false
+        });
+        p.explode();
+    });
+    scene.missiles.clear(true, true);
+
+    scene.add.sprite(180, 586, 'cake').setOrigin(0.5, 1);
 
     // Fireworks
     const colors = [0xff0000, 0x00ff00, 0x0000ff, 0xffff00, 0xff00ff, 0x00ffff];
@@ -254,37 +273,57 @@ function startVictory(scene) {
         callbackScope: scene
     });
 
-    // Banner
-    const banner = scene.add.container(scene.saucer.x, scene.saucer.y + 60);
-    const bg = scene.add.image(0, 0, 'banner_base');
-    const text = scene.add.text(0, 0, 'HAPPY BIRTHDAY!', {
+    // Animate UFO to center of screen
+    scene.tweens.add({
+        targets: scene.saucer,
+        x: 180,
+        y: 280,
+        duration: 2500,
+        ease: 'Power2'
+    });
+
+    // Banner — unfurls downward from the saucer
+    const bannerRestOffset = 100;
+    const banner = scene.add.container(scene.saucer.x, scene.saucer.y);
+    const bg = scene.add.image(0, 25, 'banner_base').setOrigin(0.5, 0.5);
+    const text = scene.add.text(0, 25, 'HAPPY BIRTHDAY!', {
         fontFamily: '"Courier New", Courier, monospace',
-        fontSize: '14px',
+        fontSize: '24px',
         color: '#ff0000',
         fontWeight: 'bold'
     }).setOrigin(0.5);
     banner.add([bg, text]);
-    banner.alpha = 0;
+    banner.bannerOffset = 10;
+    banner.scaleY = 0;
 
     const string = scene.add.graphics();
 
+    // Unfurl: scale from 0 to 1 vertically while dropping down
     scene.tweens.add({
         targets: banner,
-        alpha: 1,
-        duration: 500
+        scaleY: 1,
+        bannerOffset: bannerRestOffset,
+        duration: 1800,
+        ease: 'Power2'
     });
 
+    let bannerTime = 0;
     scene.updateBanner = () => {
-        banner.x = scene.saucer.x;
-        banner.y = scene.saucer.y + 60;
+        bannerTime += 0.03;
+        const undulateX = Math.sin(bannerTime * 2) * 6;
+        const undulateY = Math.cos(bannerTime * 3) * 3;
+
+        banner.x = scene.saucer.x + undulateX;
+        banner.y = scene.saucer.y + banner.bannerOffset + undulateY;
+        banner.rotation = Math.sin(bannerTime * 1.5) * 0.05;
 
         string.clear();
         string.lineStyle(2, 0xffffff, 1);
-        string.lineBetween(scene.saucer.x, scene.saucer.y, banner.x, banner.y - 15);
+        string.lineBetween(scene.saucer.x, scene.saucer.y, banner.x, banner.y);
     };
 
-    scene.titleText.setText('MISSION ACCOMPLISHED!');
-    scene.titleText.setColor('#ffff00');
+    // Hide the title text on victory
+    scene.titleText.setVisible(false);
 }
 
 function createTextures(scene) {
@@ -296,13 +335,41 @@ function createTextures(scene) {
     graphics.generateTexture('star', 2, 2);
     graphics.clear();
 
-    // Ground
+    // Ground (irregular moon surface)
     graphics.fillStyle(0x777777, 1);
-    graphics.fillRect(0, 0, 40, 40);
+    graphics.fillRect(0, 0, 120, 60);
+    // Varied surface patches
+    graphics.fillStyle(0x888888, 1);
+    graphics.fillRect(0, 0, 120, 3);
+    graphics.fillStyle(0x6a6a6a, 1);
+    graphics.fillRect(10, 3, 25, 4);
+    graphics.fillRect(70, 2, 15, 5);
+    graphics.fillRect(45, 5, 20, 3);
+    // Craters
     graphics.fillStyle(0x555555, 1);
-    graphics.fillRect(5, 5, 10, 10);
-    graphics.fillRect(25, 20, 8, 8);
-    graphics.generateTexture('ground', 40, 40);
+    graphics.fillCircle(20, 25, 8);
+    graphics.fillCircle(85, 35, 10);
+    graphics.fillCircle(55, 18, 5);
+    graphics.fillStyle(0x666666, 1);
+    graphics.fillCircle(20, 24, 6);
+    graphics.fillCircle(85, 34, 7);
+    graphics.fillCircle(55, 17, 3);
+    // Rocks and pebbles
+    graphics.fillStyle(0x999999, 1);
+    graphics.fillRect(42, 40, 5, 3);
+    graphics.fillRect(100, 15, 4, 3);
+    graphics.fillRect(8, 45, 3, 2);
+    graphics.fillStyle(0x5a5a5a, 1);
+    graphics.fillRect(30, 50, 7, 4);
+    graphics.fillRect(75, 12, 6, 3);
+    graphics.fillRect(105, 45, 5, 4);
+    // Surface roughness
+    graphics.fillStyle(0x6e6e6e, 1);
+    graphics.fillRect(0, 8, 8, 2);
+    graphics.fillRect(35, 12, 12, 2);
+    graphics.fillRect(90, 6, 10, 2);
+    graphics.fillRect(60, 48, 15, 2);
+    graphics.generateTexture('ground', 120, 60);
     graphics.clear();
 
     // Saucer
@@ -330,12 +397,22 @@ function createTextures(scene) {
     graphics.generateTexture('dome', 160, 80);
     graphics.clear();
 
-    // Bomb
-    graphics.fillStyle(0xffffff, 1);
-    graphics.fillRect(0, 0, 6, 10);
-    graphics.fillStyle(0xff0000, 1);
-    graphics.fillRect(0, 0, 6, 3);
-    graphics.generateTexture('bomb', 6, 10);
+    // Bomb (classic round bomb with fuse)
+    graphics.fillStyle(0x333333, 1);
+    graphics.fillCircle(10, 14, 8);
+    graphics.fillStyle(0x222222, 1);
+    graphics.fillCircle(10, 14, 6);
+    graphics.fillStyle(0x555555, 1);
+    graphics.fillCircle(8, 11, 3);
+    // Fuse stem
+    graphics.fillStyle(0x666666, 1);
+    graphics.fillRect(9, 2, 2, 6);
+    // Fuse spark
+    graphics.fillStyle(0xffff00, 1);
+    graphics.fillCircle(10, 2, 2);
+    graphics.fillStyle(0xffa500, 1);
+    graphics.fillCircle(10, 1, 1);
+    graphics.generateTexture('bomb', 20, 22);
     graphics.clear();
 
     // Missile
@@ -348,33 +425,54 @@ function createTextures(scene) {
     graphics.generateTexture('missile', 14, 8);
     graphics.clear();
 
-    // Cake
+    // Cake (detailed with candles)
+    // Bottom tier
     graphics.fillStyle(0x8B4513, 1);
-    graphics.fillRect(5, 15, 30, 20);
+    graphics.fillRect(10, 70, 100, 40);
+    // Bottom tier frosting
+    graphics.fillStyle(0xFFB6C1, 1);
+    graphics.fillRect(10, 70, 100, 8);
+    // Bottom tier drip details
+    graphics.fillStyle(0xFF69B4, 1);
+    graphics.fillRect(20, 78, 4, 6);
+    graphics.fillRect(40, 78, 4, 8);
+    graphics.fillRect(60, 78, 4, 5);
+    graphics.fillRect(80, 78, 4, 7);
+    graphics.fillRect(96, 78, 4, 6);
+    // Top tier
+    graphics.fillStyle(0x9B5523, 1);
+    graphics.fillRect(25, 45, 70, 25);
+    // Top tier frosting
     graphics.fillStyle(0xffffff, 1);
-    graphics.fillRect(5, 15, 30, 5);
-    graphics.fillStyle(0xff0000, 1);
-    graphics.fillCircle(20, 12, 3);
-    graphics.generateTexture('cake', 40, 40);
-    graphics.clear();
-
-    // Banner
-    graphics.fillStyle(0xffffff, 1);
-    graphics.fillRect(0, 0, 140, 30);
-    graphics.generateTexture('banner_base', 140, 30);
-    graphics.clear();
-
-    for (let i = 1; i <= 4; i++) {
-        graphics.lineStyle(2, 0x444444, 1);
-        for (let j = 0; j < i * 2; j++) {
-            graphics.lineBetween(
-                Phaser.Math.Between(40, 120),
-                Phaser.Math.Between(20, 60),
-                Phaser.Math.Between(40, 120),
-                Phaser.Math.Between(20, 60)
-            );
-        }
-        graphics.generateTexture('cracks_' + i, 160, 80);
-        graphics.clear();
+    graphics.fillRect(25, 45, 70, 8);
+    // Top tier drip details
+    graphics.fillStyle(0xFFB6C1, 1);
+    graphics.fillRect(30, 53, 3, 5);
+    graphics.fillRect(50, 53, 3, 6);
+    graphics.fillRect(70, 53, 3, 4);
+    graphics.fillRect(85, 53, 3, 5);
+    // Candles
+    const candleColors = [0xff0000, 0x00ff00, 0x0000ff, 0xffff00, 0xff00ff];
+    const candleXPositions = [35, 48, 60, 72, 85];
+    for (let c = 0; c < 5; c++) {
+        graphics.fillStyle(candleColors[c], 1);
+        graphics.fillRect(candleXPositions[c], 25, 4, 20);
+        // Flame
+        graphics.fillStyle(0xffff00, 1);
+        graphics.fillRect(candleXPositions[c], 19, 4, 6);
+        graphics.fillStyle(0xffa500, 1);
+        graphics.fillRect(candleXPositions[c] + 1, 21, 2, 3);
     }
+    // Plate
+    graphics.fillStyle(0xcccccc, 1);
+    graphics.fillRect(5, 110, 110, 4);
+    graphics.generateTexture('cake', 120, 120);
+    graphics.clear();
+
+    // Banner (bigger)
+    graphics.fillStyle(0xffffff, 1);
+    graphics.fillRect(0, 0, 240, 50);
+    graphics.generateTexture('banner_base', 240, 50);
+    graphics.clear();
+
 }
